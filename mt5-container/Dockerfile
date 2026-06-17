@@ -32,21 +32,35 @@ RUN apt-get update && apt-get install -y \
 # build-arg from compose can't fall back to a nonexistent pinned version.
 ARG WINE_BRANCH=stable
 ARG WINE_VERSION=
-RUN dpkg --add-architecture i386 && \
-    mkdir -pm755 /etc/apt/keyrings && \
-    wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key && \
-    wget -nc -P /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources && \
-    apt-get update && \
-    if [ -n "${WINE_VERSION}" ]; then \
-      apt-get install -y --install-recommends \
-        winehq-${WINE_BRANCH}=${WINE_VERSION} \
-        wine-${WINE_BRANCH}=${WINE_VERSION} \
-        wine-${WINE_BRANCH}-amd64=${WINE_VERSION} \
-        wine-${WINE_BRANCH}-i386=${WINE_VERSION} ; \
+# WINE_I386=1 -> classic WoW64 (install the i386 packages). WINE_I386=0 -> new
+# WoW64 (amd64 only, 64-bit Wine emulates 32-bit). New WoW64 sometimes bootstraps
+# on hosts where classic i386 WoW64 fails with "could not load kernel32 c0000135".
+ARG WINE_I386=1
+RUN set -eux; \
+    dpkg --add-architecture i386; \
+    mkdir -pm755 /etc/apt/keyrings; \
+    wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key; \
+    wget -nc -P /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources; \
+    apt-get update; \
+    if [ "${WINE_I386}" = "0" ]; then \
+      # new WoW64: amd64 only, no i386, no recommends (which would pull i386).
+      if [ -n "${WINE_VERSION}" ]; then \
+        apt-get install -y --no-install-recommends \
+          winehq-${WINE_BRANCH}=${WINE_VERSION} wine-${WINE_BRANCH}=${WINE_VERSION} wine-${WINE_BRANCH}-amd64=${WINE_VERSION}; \
+      else \
+        apt-get install -y --no-install-recommends winehq-${WINE_BRANCH}; \
+      fi; \
     else \
-      apt-get install -y --install-recommends winehq-${WINE_BRANCH} ; \
-    fi && \
-    apt-get install -y xvfb x11vnc cabextract winbind && \
+      # classic WoW64: amd64 + i386.
+      if [ -n "${WINE_VERSION}" ]; then \
+        apt-get install -y --install-recommends \
+          winehq-${WINE_BRANCH}=${WINE_VERSION} wine-${WINE_BRANCH}=${WINE_VERSION} \
+          wine-${WINE_BRANCH}-amd64=${WINE_VERSION} wine-${WINE_BRANCH}-i386=${WINE_VERSION}; \
+      else \
+        apt-get install -y --install-recommends winehq-${WINE_BRANCH}; \
+      fi; \
+    fi; \
+    apt-get install -y xvfb x11vnc cabextract winbind; \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Pre-cache wine-mono + wine-gecko so wineboot installs them offline (no popup,
