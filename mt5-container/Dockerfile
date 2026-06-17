@@ -24,11 +24,14 @@ RUN apt-get update && apt-get install -y \
 # stable 9.x ("A debugger has been found running in your system"). Wine 10.x /
 # staging passes it. Xvfb + x11vnc are for the patched startup (tightvncserver's
 # Xvnc lacks the X SHAPE extension, which crashes Wine's prefix bootstrap).
-# Pin Wine to EXACTLY 10.2 (reported to pass the MT5 installer's anti-debug).
-# If winehq prunes 10.2 from the repo, set WINE_VERSION= (empty) to take the
-# latest of WINE_BRANCH, or bump to an available version.
-ARG WINE_BRANCH=staging
-ARG WINE_VERSION=10.2~bookworm-1
+# Defaults: stable + latest (boots on the widest range of hosts — Wine 10.x's
+# new WoW64 fails to bootstrap on some VPS kernels). Override at build time for a
+# specific build, e.g. WINE_BRANCH=staging WINE_VERSION=10.2~bookworm-1 (10.2 is
+# reported to pass the MT5 installer's anti-debug, where it boots). An EMPTY
+# WINE_VERSION installs the latest of the branch — the default — so an empty
+# build-arg from compose can't fall back to a nonexistent pinned version.
+ARG WINE_BRANCH=stable
+ARG WINE_VERSION=
 RUN dpkg --add-architecture i386 && \
     mkdir -pm755 /etc/apt/keyrings && \
     wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key && \
