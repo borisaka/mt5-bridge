@@ -19,48 +19,52 @@ RUN apt-get update && apt-get install -y \
     && apt-get remove -y xfce4-power-manager \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# --- Wine + display deps, baked at BUILD time (not reinstalled per container) ---
-# The MetaQuotes MT5 installer is VMProtect-packed; its anti-debug trips on Wine
-# stable 9.x ("A debugger has been found running in your system"). Wine 10.x /
-# staging passes it. Xvfb + x11vnc are for the patched startup (tightvncserver's
-# Xvnc lacks the X SHAPE extension, which crashes Wine's prefix bootstrap).
-# Defaults: stable + latest (boots on the widest range of hosts — Wine 10.x's
-# new WoW64 fails to bootstrap on some VPS kernels). Override at build time for a
-# specific build, e.g. WINE_BRANCH=staging WINE_VERSION=10.2~bookworm-1 (10.2 is
-# reported to pass the MT5 installer's anti-debug, where it boots). An EMPTY
-# WINE_VERSION installs the latest of the branch — the default — so an empty
-# build-arg from compose can't fall back to a nonexistent pinned version.
+# --- Wine, baked at build time. DEFAULT = a PORTABLE Kron4ek build (no apt deps) ---
+# The winehq apt packages are a dead end on this host: stable bootstraps but the
+# MT5 installer's VMProtect anti-debug blocks; 10.x's classic i386 WoW64 won't
+# bootstrap ("could not load kernel32 c0000135") and amd64-only can't be installed
+# (wine-staging hard-depends on wine-staging-i386). A portable Kron4ek build sidesteps
+# all of it: a self-contained new-WoW64 10.2 (runs 32-bit without i386), extracted
+# to /opt/wine. Set WINE_TARBALL_URL empty to use the winehq apt fallback instead.
+# Xvfb + x11vnc are for the patched startup (tightvncserver's Xvnc lacks SHAPE).
+ARG WINE_TARBALL_URL=https://github.com/Kron4ek/Wine-Builds/releases/download/10.2/wine-10.2-staging-amd64-wow64.tar.xz
+# winehq apt fallback (only used when WINE_TARBALL_URL is empty):
 ARG WINE_BRANCH=stable
 ARG WINE_VERSION=
-# WINE_I386=1 -> classic WoW64 (install the i386 packages). WINE_I386=0 -> new
-# WoW64 (amd64 only, 64-bit Wine emulates 32-bit). New WoW64 sometimes bootstraps
-# on hosts where classic i386 WoW64 fails with "could not load kernel32 c0000135".
 ARG WINE_I386=1
 RUN set -eux; \
-    dpkg --add-architecture i386; \
-    mkdir -pm755 /etc/apt/keyrings; \
-    wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key; \
-    wget -nc -P /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources; \
     apt-get update; \
-    if [ "${WINE_I386}" = "0" ]; then \
-      # new WoW64: amd64 only, no i386, no recommends (which would pull i386).
-      if [ -n "${WINE_VERSION}" ]; then \
+    if [ -n "${WINE_TARBALL_URL}" ]; then \
+      # Portable Wine: extract + symlink + install only the 64-bit runtime libs it needs.
+      apt-get install -y --no-install-recommends \
+        xz-utils ca-certificates fontconfig cabextract \
+        libfreetype6 libgnutls30 libgmp10 libgl1 libglu1-mesa \
+        libx11-6 libxext6 libxrandr2 libxi6 libxcursor1 libxcomposite1 libxinerama1 libxrender1 libasound2; \
+      mkdir -p /opt/wine; \
+      wget -O /tmp/wine.tar.xz "${WINE_TARBALL_URL}"; \
+      tar -xJf /tmp/wine.tar.xz -C /opt/wine --strip-components=1; \
+      rm -f /tmp/wine.tar.xz; \
+      for b in /opt/wine/bin/*; do ln -sf "$b" /usr/local/bin/; done; \
+      /usr/local/bin/wine --version; \
+    else \
+      dpkg --add-architecture i386; \
+      mkdir -pm755 /etc/apt/keyrings; \
+      wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key; \
+      wget -nc -P /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources; \
+      apt-get update; \
+      if [ -n "${WINE_VERSION}" ] && [ "${WINE_I386}" = "0" ]; then \
         apt-get install -y --no-install-recommends \
           winehq-${WINE_BRANCH}=${WINE_VERSION} wine-${WINE_BRANCH}=${WINE_VERSION} wine-${WINE_BRANCH}-amd64=${WINE_VERSION}; \
-      else \
-        apt-get install -y --no-install-recommends winehq-${WINE_BRANCH}; \
-      fi; \
-    else \
-      # classic WoW64: amd64 + i386.
-      if [ -n "${WINE_VERSION}" ]; then \
+      elif [ -n "${WINE_VERSION}" ]; then \
         apt-get install -y --install-recommends \
           winehq-${WINE_BRANCH}=${WINE_VERSION} wine-${WINE_BRANCH}=${WINE_VERSION} \
           wine-${WINE_BRANCH}-amd64=${WINE_VERSION} wine-${WINE_BRANCH}-i386=${WINE_VERSION}; \
       else \
         apt-get install -y --install-recommends winehq-${WINE_BRANCH}; \
       fi; \
+      apt-get install -y cabextract winbind; \
     fi; \
-    apt-get install -y xvfb x11vnc cabextract winbind; \
+    apt-get install -y xvfb x11vnc; \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Pre-cache wine-mono + wine-gecko so wineboot installs them offline (no popup,
