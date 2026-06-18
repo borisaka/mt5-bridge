@@ -596,9 +596,9 @@ JsonResponse CCommandCore::RetriveHistoricalData(string symbol, string timeFrame
     if(count < 1)     count = 1;
     if(count > 20000) count = 20000;
     int copied = CopyRates(symbol, tf, (int)start_pos, (int)count, rates);
-    if(copied <= 0) {
-        return SendError(500, "Failed to retrieve data for " + symbol);
-    }
+    // NOTE: copied <= 0 is NOT a hard error here — it usually just means the
+    // terminal hasn't downloaded that depth yet. It flows into the status logic
+    // below (reported as "syncing") so the client retries instead of failing.
 
     string norm_from = TimeToString(from_date, TIME_DATE | TIME_SECONDS);
     string norm_to   = TimeToString(to_date, TIME_DATE | TIME_SECONDS);
@@ -610,6 +610,7 @@ JsonResponse CCommandCore::RetriveHistoricalData(string symbol, string timeFrame
     // Emit only the bars inside the requested [from_date, to_date] window.
     string jsonData = "[";
     bool first = true;
+    int emitted = 0;
     for(int i = 0; i < copied; i++) {
         if(rates[i].time < from_date || rates[i].time > to_date) continue;
         string t = TimeToString(rates[i].time, TIME_DATE | TIME_SECONDS);
@@ -626,12 +627,31 @@ JsonResponse CCommandCore::RetriveHistoricalData(string symbol, string timeFrame
         jsonData += "\"close\":" + DoubleToString(rates[i].close, 5) + ",";
         jsonData += "\"volume\":" + IntegerToString(rates[i].tick_volume);
         jsonData += "}";
+        emitted++;
     }
     jsonData += "]";
 
- 
+    // Explicit backfill status so the client never has to guess what an empty
+    // window means (an empty payload used to be misread as "no more history",
+    // permanently truncating a backfill while the EA was merely busy/downloading):
+    //   "ok"       -> bars returned
+    //   "complete" -> the request starts OLDER than the broker's earliest bar
+    //                 (SERIES_SERVER_FIRSTDATE) -> there is genuinely no more
+    //                 history; the client should stop.
+    //   "syncing"  -> the broker HAS older bars but the terminal hasn't downloaded
+    //                 this depth yet, or the EA was busy -> the client should retry
+    //                 later (move to another symbol and come back).
+    // SERIES_SERVER_FIRSTDATE is 0 until the terminal learns it; treat 0 as
+    // "syncing" so we keep trying rather than give up.
+    string status = "ok";
+    if(emitted == 0) {
+        datetime server_first = (datetime)SeriesInfoInteger(symbol, tf, SERIES_SERVER_FIRSTDATE);
+        status = (server_first > 0 && from_date < server_first) ? "complete" : "syncing";
+    }
+
     string jsonStr = "\"from_date\":\"" + norm_from + "\",";
     jsonStr += "\"to_date\":\"" + norm_to + "\",";
+    jsonStr += "\"status\":\"" + status + "\",";
     jsonStr += "\"data\":" + jsonData;
 
     return SendJson(jsonStr);
