@@ -573,7 +573,20 @@ JsonResponse CCommandCore::RetriveHistoricalData(string symbol, string timeFrame
 
     ENUM_TIMEFRAMES tf = getTimeFrameEnum(timeFrame);
     MqlRates rates[];
-    int bars = CopyRates(symbol, tf, from_date, to_date, rates);
+
+    // CopyRates over a date range triggers an ASYNCHRONOUS history download and
+    // returns -1 (or 0) until the terminal has built the timeseries for that
+    // range. A single call therefore fails for any range not already cached
+    // (which, for a freshly-connected terminal, is essentially everything). Drive
+    // the download by retrying in a tight loop with a short Sleep so the terminal
+    // can fetch the bars; capped at ~5s to stay under the client request timeout.
+    // If it still isn't ready the download keeps running and the next request
+    // succeeds.
+    int bars = -1;
+    for(int attempt = 0; attempt < 50 && bars <= 0; attempt++) {
+        bars = CopyRates(symbol, tf, from_date, to_date, rates);
+        if(bars <= 0) Sleep(100);
+    }
     if(bars <= 0) {
         return SendError(500, "Failed to retrieve data for " + symbol);
     }
