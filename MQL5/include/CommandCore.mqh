@@ -580,14 +580,22 @@ JsonResponse CCommandCore::RetriveHistoricalData(string symbol, string timeFrame
     // (every request is served inside one OnTimer), so a sleeping request blocks
     // ALL other requests. Instead copy by POSITION (the loaded series — the same
     // call the live-OHLC path uses successfully) and filter to [from_date, to_date].
-    // One call, no Sleep -> it can never block the server. Size the copy to span
-    // [from_date, now], capped so a very old from_date can't request an unbounded
-    // array.
+    // One call, no Sleep -> it can never block the server.
+    //
+    // Copy ONLY the requested window via the (start_pos, count) overload. An earlier
+    // version sized the copy as (now - from_date), so a deep from_date (e.g. Jan 2025)
+    // made us copy + iterate ~200k bars per request and froze the server. Here:
+    //   start_pos = bars back from the latest bar to where the window END sits
+    //   count     = bars the [from_date, to_date] window spans
+    // both bounded (count capped — the client backfills in chunks).
     int period_sec = PeriodSeconds(tf);
-    long needL = (period_sec > 0) ? ((long)(TimeCurrent() - from_date) / period_sec) + 5 : 5000;
-    if(needL < 1)      needL = 1;
-    if(needL > 200000) needL = 200000;
-    int copied = CopyRates(symbol, tf, 0, (int)needL, rates);
+    datetime srv_now = TimeCurrent();
+    long start_pos = (period_sec > 0 && to_date < srv_now) ? ((long)(srv_now - to_date) / period_sec) : 0;
+    long count     = (period_sec > 0) ? ((long)(to_date - from_date) / period_sec) + 2 : 5000;
+    if(start_pos < 0) start_pos = 0;
+    if(count < 1)     count = 1;
+    if(count > 20000) count = 20000;
+    int copied = CopyRates(symbol, tf, (int)start_pos, (int)count, rates);
     if(copied <= 0) {
         return SendError(500, "Failed to retrieve data for " + symbol);
     }
