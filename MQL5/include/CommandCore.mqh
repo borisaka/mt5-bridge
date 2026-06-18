@@ -574,20 +574,21 @@ JsonResponse CCommandCore::RetriveHistoricalData(string symbol, string timeFrame
     ENUM_TIMEFRAMES tf = getTimeFrameEnum(timeFrame);
     MqlRates rates[];
 
-    // CopyRates over a date range triggers an ASYNCHRONOUS history download and
-    // returns -1 (or 0) until the terminal has built the timeseries for that
-    // range. A single call therefore fails for any range not already cached
-    // (which, for a freshly-connected terminal, is essentially everything). Drive
-    // the download by retrying in a tight loop with a short Sleep so the terminal
-    // can fetch the bars; capped at ~5s to stay under the client request timeout.
-    // If it still isn't ready the download keeps running and the next request
-    // succeeds.
-    int bars = -1;
-    for(int attempt = 0; attempt < 50 && bars <= 0; attempt++) {
-        bars = CopyRates(symbol, tf, from_date, to_date, rates);
-        if(bars <= 0) Sleep(100);
-    }
-    if(bars <= 0) {
+    // The date-range overload CopyRates(sym,tf,from,to) does NOT reliably return
+    // data on this broker (it needs an async download that never completes), and a
+    // Sleep-based retry loop FROZE the bridge: the HTTP server is single-threaded
+    // (every request is served inside one OnTimer), so a sleeping request blocks
+    // ALL other requests. Instead copy by POSITION (the loaded series — the same
+    // call the live-OHLC path uses successfully) and filter to [from_date, to_date].
+    // One call, no Sleep -> it can never block the server. Size the copy to span
+    // [from_date, now], capped so a very old from_date can't request an unbounded
+    // array.
+    int period_sec = PeriodSeconds(tf);
+    long needL = (period_sec > 0) ? ((long)(TimeCurrent() - from_date) / period_sec) + 5 : 5000;
+    if(needL < 1)      needL = 1;
+    if(needL > 200000) needL = 200000;
+    int copied = CopyRates(symbol, tf, 0, (int)needL, rates);
+    if(copied <= 0) {
         return SendError(500, "Failed to retrieve data for " + symbol);
     }
 
@@ -598,13 +599,17 @@ JsonResponse CCommandCore::RetriveHistoricalData(string symbol, string timeFrame
     StringReplace(norm_to, ".", "-");
     StringReplace(norm_to, " ", "T");
 
- 
+    // Emit only the bars inside the requested [from_date, to_date] window.
     string jsonData = "[";
-    for(int i = 0; i < bars; i++) {
+    bool first = true;
+    for(int i = 0; i < copied; i++) {
+        if(rates[i].time < from_date || rates[i].time > to_date) continue;
         string t = TimeToString(rates[i].time, TIME_DATE | TIME_SECONDS);
         StringReplace(t, ".", "-");
         StringReplace(t, " ", "T");
 
+        if(!first) jsonData += ",";
+        first = false;
         jsonData += "{";
         jsonData += "\"time\":\"" + t + "\",";
         jsonData += "\"open\":" + DoubleToString(rates[i].open, 5) + ",";
@@ -613,8 +618,6 @@ JsonResponse CCommandCore::RetriveHistoricalData(string symbol, string timeFrame
         jsonData += "\"close\":" + DoubleToString(rates[i].close, 5) + ",";
         jsonData += "\"volume\":" + IntegerToString(rates[i].tick_volume);
         jsonData += "}";
-        if(i < bars - 1)
-            jsonData += ",";
     }
     jsonData += "]";
 
