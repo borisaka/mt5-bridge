@@ -574,31 +574,23 @@ JsonResponse CCommandCore::RetriveHistoricalData(string symbol, string timeFrame
     ENUM_TIMEFRAMES tf = getTimeFrameEnum(timeFrame);
     MqlRates rates[];
 
-    // The date-range overload CopyRates(sym,tf,from,to) does NOT reliably return
-    // data on this broker (it needs an async download that never completes), and a
-    // Sleep-based retry loop FROZE the bridge: the HTTP server is single-threaded
-    // (every request is served inside one OnTimer), so a sleeping request blocks
-    // ALL other requests. Instead copy by POSITION (the loaded series — the same
-    // call the live-OHLC path uses successfully) and filter to [from_date, to_date].
-    // One call, no Sleep -> it can never block the server.
-    //
-    // Copy ONLY the requested window via the (start_pos, count) overload. An earlier
-    // version sized the copy as (now - from_date), so a deep from_date (e.g. Jan 2025)
-    // made us copy + iterate ~200k bars per request and froze the server. Here:
-    //   start_pos = bars back from the latest bar to where the window END sits
-    //   count     = bars the [from_date, to_date] window spans
-    // both bounded (count capped — the client backfills in chunks).
-    int period_sec = PeriodSeconds(tf);
-    datetime srv_now = TimeCurrent();
-    long start_pos = (period_sec > 0 && to_date < srv_now) ? ((long)(srv_now - to_date) / period_sec) : 0;
-    long count     = (period_sec > 0) ? ((long)(to_date - from_date) / period_sec) + 2 : 5000;
-    if(start_pos < 0) start_pos = 0;
-    if(count < 1)     count = 1;
-    if(count > 20000) count = 20000;
-    int copied = CopyRates(symbol, tf, (int)start_pos, (int)count, rates);
-    // NOTE: copied <= 0 is NOT a hard error here — it usually just means the
-    // terminal hasn't downloaded that depth yet. It flows into the status logic
-    // below (reported as "syncing") so the client retries instead of failing.
+    // Copy by DATE RANGE — CopyRates(sym, tf, from_date, to_date). This is the
+    // right tool for backfill: it's anchored by TIME (no position arithmetic, so
+    // weekend gaps can't misalign it — the old (start_pos, count) form computed
+    // start_pos from CALENDAR seconds, which overshot the loaded series for forex
+    // and returned bars OUTSIDE [from,to] -> everything got filtered out -> the
+    // backfill stalled "syncing" forever even with the history loaded), AND it
+    // TRIGGERS MT5's async history download for ranges not yet local. One
+    // non-blocking call — NO Sleep/retry loop (that, not the overload, is what
+    // froze the single-threaded bridge before): if the data isn't downloaded yet
+    // this returns <= 0 and we report "syncing" (below) so the CLIENT retries on
+    // its own cadence; by a later request the download has landed -> "ok". The
+    // client backfills in small chunks, so the range (and bar count) stays bounded.
+    int copied = CopyRates(symbol, tf, from_date, to_date, rates);
+    // NOTE: copied <= 0 is NOT a hard error — it usually just means the terminal
+    // hasn't downloaded that depth yet (the call above kicked off the download).
+    // It flows into the status logic below (reported as "syncing") so the client
+    // retries instead of failing.
 
     string norm_from = TimeToString(from_date, TIME_DATE | TIME_SECONDS);
     string norm_to   = TimeToString(to_date, TIME_DATE | TIME_SECONDS);
